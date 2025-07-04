@@ -8,6 +8,7 @@
 (define-constant ERR_COMPANY_NOT_REGISTERED (err u106))
 (define-constant ERR_COMPANY_ALREADY_REGISTERED (err u107))
 (define-constant ERR_INVALID_PRICE (err u108))
+(define-constant ERR_INSUFFICIENT_CREDITS_TO_RETIRE (err u109))
 
 (define-map companies
   { company: principal }
@@ -221,4 +222,79 @@
     listing (and (get active listing) (< stacks-block-height (get expires-at listing)))
     false
   )
+)
+
+
+(define-map credit-retirements
+  { retirement-id: uint }
+  {
+    company: principal,
+    amount: uint,
+    timestamp: uint,
+    reason: (string-ascii 100)
+  }
+)
+
+(define-map company-retirement-totals
+  { company: principal }
+  { total-retired: uint }
+)
+
+(define-data-var next-retirement-id uint u1)
+(define-data-var total-credits-retired uint u0)
+
+(define-public (retire-credits (amount uint) (reason (string-ascii 100)))
+  (let (
+    (company tx-sender)
+    (retirement-id (var-get next-retirement-id))
+    (company-data (map-get? companies { company: company }))
+  )
+    (asserts! (is-some company-data) ERR_COMPANY_NOT_REGISTERED)
+    (asserts! (> amount u0) ERR_INVALID_AMOUNT)
+    
+    (let ((current-company-data (unwrap-panic company-data)))
+      (asserts! (>= (get credits current-company-data) amount) ERR_INSUFFICIENT_CREDITS_TO_RETIRE)
+      
+      (map-set companies
+        { company: company }
+        (merge current-company-data { credits: (- (get credits current-company-data) amount) })
+      )
+      
+      (map-set credit-retirements
+        { retirement-id: retirement-id }
+        {
+          company: company,
+          amount: amount,
+          timestamp: stacks-block-height,
+          reason: reason
+        }
+      )
+      
+      (let ((current-total (default-to u0 (get total-retired (map-get? company-retirement-totals { company: company })))))
+        (map-set company-retirement-totals
+          { company: company }
+          { total-retired: (+ current-total amount) }
+        )
+      )
+      
+      (var-set next-retirement-id (+ retirement-id u1))
+      (var-set total-credits-retired (+ (var-get total-credits-retired) amount))
+      (ok retirement-id)
+    )
+  )
+)
+
+(define-read-only (get-retirement (retirement-id uint))
+  (map-get? credit-retirements { retirement-id: retirement-id })
+)
+
+(define-read-only (get-company-retirement-total (company principal))
+  (default-to u0 (get total-retired (map-get? company-retirement-totals { company: company })))
+)
+
+(define-read-only (get-retirement-stats)
+  {
+    total-credits-retired: (var-get total-credits-retired),
+    next-retirement-id: (var-get next-retirement-id)
+  }
 )
