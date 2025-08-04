@@ -10,6 +10,11 @@
 (define-constant ERR_INVALID_PRICE (err u108))
 (define-constant ERR_INSUFFICIENT_CREDITS_TO_RETIRE (err u109))
 
+(define-constant REPUTATION_MULTIPLIER u100)
+(define-constant MAX_REPUTATION_SCORE u1000)
+(define-constant SUCCESSFUL_SALE_POINTS u10)
+(define-constant CANCELLED_LISTING_PENALTY u5)
+
 (define-map companies
   { company: principal }
   {
@@ -297,4 +302,90 @@
     total-credits-retired: (var-get total-credits-retired),
     next-retirement-id: (var-get next-retirement-id)
   }
+)
+
+(define-map company-reputation
+  { company: principal }
+  {
+    total-sales: uint,
+    successful-deliveries: uint,
+    cancelled-listings: uint,
+    reputation-score: uint,
+    last-updated: uint
+  }
+)
+
+(define-private (calculate-reputation-score (total-sales uint) (successful-deliveries uint) (cancelled-listings uint))
+  (let (
+    (base-score (* (/ (* successful-deliveries REPUTATION_MULTIPLIER) (+ total-sales u1)) SUCCESSFUL_SALE_POINTS))
+    (penalty (* cancelled-listings CANCELLED_LISTING_PENALTY))
+  )
+    (if (<= base-score penalty)
+      u0
+      (if (> (- base-score penalty) MAX_REPUTATION_SCORE)
+        MAX_REPUTATION_SCORE
+        (- base-score penalty)
+      )
+    )
+  )
+)
+
+(define-private (update-reputation-on-sale (seller principal))
+  (let (
+    (current-rep (default-to 
+      { total-sales: u0, successful-deliveries: u0, cancelled-listings: u0, reputation-score: u0, last-updated: u0 }
+      (map-get? company-reputation { company: seller })
+    ))
+  )
+    (let (
+      (new-total-sales (+ (get total-sales current-rep) u1))
+      (new-successful-deliveries (+ (get successful-deliveries current-rep) u1))
+      (new-cancelled-listings (get cancelled-listings current-rep))
+    )
+      (map-set company-reputation
+        { company: seller }
+        {
+          total-sales: new-total-sales,
+          successful-deliveries: new-successful-deliveries,
+          cancelled-listings: new-cancelled-listings,
+          reputation-score: (calculate-reputation-score new-total-sales new-successful-deliveries new-cancelled-listings),
+          last-updated: stacks-block-height
+        }
+      )
+    )
+  )
+)
+
+(define-private (update-reputation-on-cancel (seller principal))
+  (let (
+    (current-rep (default-to 
+      { total-sales: u0, successful-deliveries: u0, cancelled-listings: u0, reputation-score: u0, last-updated: u0 }
+      (map-get? company-reputation { company: seller })
+    ))
+  )
+    (let (
+      (new-total-sales (get total-sales current-rep))
+      (new-successful-deliveries (get successful-deliveries current-rep))
+      (new-cancelled-listings (+ (get cancelled-listings current-rep) u1))
+    )
+      (map-set company-reputation
+        { company: seller }
+        {
+          total-sales: new-total-sales,
+          successful-deliveries: new-successful-deliveries,
+          cancelled-listings: new-cancelled-listings,
+          reputation-score: (calculate-reputation-score new-total-sales new-successful-deliveries new-cancelled-listings),
+          last-updated: stacks-block-height
+        }
+      )
+    )
+  )
+)
+
+(define-read-only (get-company-reputation (company principal))
+  (map-get? company-reputation { company: company })
+)
+
+(define-read-only (get-reputation-score (company principal))
+  (default-to u0 (get reputation-score (map-get? company-reputation { company: company })))
 )
