@@ -15,6 +15,10 @@
 (define-constant SUCCESSFUL_SALE_POINTS u10)
 (define-constant CANCELLED_LISTING_PENALTY u5)
 
+(define-constant ERR_ESCROW_NOT_FOUND (err u110))
+(define-constant ERR_ESCROW_NOT_EXPIRED (err u111))
+(define-constant ERR_ESCROW_ALREADY_RELEASED (err u112))
+
 (define-map companies
   { company: principal }
   {
@@ -388,4 +392,83 @@
 
 (define-read-only (get-reputation-score (company principal))
   (default-to u0 (get reputation-score (map-get? company-reputation { company: company })))
+)
+
+
+(define-map credit-escrows
+  { escrow-id: uint }
+  {
+    depositor: principal,
+    beneficiary: principal,
+    amount: uint,
+    release-block: uint,
+    released: bool,
+    created-at: uint
+  }
+)
+
+(define-data-var next-escrow-id uint u1)
+
+(define-public (create-escrow (beneficiary principal) (amount uint) (lock-duration uint))
+  (let (
+    (escrow-id (var-get next-escrow-id))
+    (depositor tx-sender)
+    (depositor-data (map-get? companies { company: depositor }))
+  )
+    (asserts! (is-some depositor-data) ERR_COMPANY_NOT_REGISTERED)
+    (asserts! (> amount u0) ERR_INVALID_AMOUNT)
+    (asserts! (is-some (map-get? companies { company: beneficiary })) ERR_COMPANY_NOT_REGISTERED)
+    
+    (let ((current-depositor-data (unwrap-panic depositor-data)))
+      (asserts! (>= (get credits current-depositor-data) amount) ERR_INSUFFICIENT_CREDITS)
+      
+      (map-set companies
+        { company: depositor }
+        (merge current-depositor-data { credits: (- (get credits current-depositor-data) amount) })
+      )
+      
+      (map-set credit-escrows
+        { escrow-id: escrow-id }
+        {
+          depositor: depositor,
+          beneficiary: beneficiary,
+          amount: amount,
+          release-block: (+ stacks-block-height lock-duration),
+          released: false,
+          created-at: stacks-block-height
+        }
+      )
+      
+      (var-set next-escrow-id (+ escrow-id u1))
+      (ok escrow-id)
+    )
+  )
+)
+
+(define-public (release-escrow (escrow-id uint))
+  (let ((escrow (map-get? credit-escrows { escrow-id: escrow-id })))
+    (asserts! (is-some escrow) ERR_ESCROW_NOT_FOUND)
+    
+    (let ((escrow-data (unwrap-panic escrow)))
+      (asserts! (not (get released escrow-data)) ERR_ESCROW_ALREADY_RELEASED)
+      (asserts! (>= stacks-block-height (get release-block escrow-data)) ERR_ESCROW_NOT_EXPIRED)
+      
+      (let ((beneficiary-data (unwrap-panic (map-get? companies { company: (get beneficiary escrow-data) }))))
+        (map-set companies
+          { company: (get beneficiary escrow-data) }
+          (merge beneficiary-data { credits: (+ (get credits beneficiary-data) (get amount escrow-data)) })
+        )
+        
+        (map-set credit-escrows
+          { escrow-id: escrow-id }
+          (merge escrow-data { released: true })
+        )
+        (ok true)
+      )
+    )
+  )
+)
+
+(define-read-only (get-escrow (escrow-id uint))
+  (map-get? credit-escrows { escrow-id: escrow-id })
 )
